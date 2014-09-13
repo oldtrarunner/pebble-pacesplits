@@ -1,0 +1,36 @@
+{
+    "appKeys": {},
+    "capabilities": [
+        ""
+    ],
+    "companyName": "ultrarunner@sbcglobal.net",
+    "longName": "Pace Splits",
+    "projectType": "native",
+    "resources": {
+        "media": [
+            {
+                "file": "images/next.png",
+                "name": "NEXT_ICON",
+                "type": "png"
+            },
+            {
+                "file": "images/start_stop_icon.png",
+                "name": "START_STOP_ICON",
+                "type": "png"
+            },
+            {
+                "file": "images/paceSplits_icon_28.png",
+                "menuIcon": true,
+                "name": "MENU_ICON",
+                "type": "png"
+            }
+        ]
+    },
+    "shortName": "PaceSplits",
+    "uuid": "235cf8bd-bd59-4a4a-8835-0fd1b1ea999e",
+    "versionCode": 1,
+    "versionLabel": "1.0",
+    "watchapp": {
+        "watchface": false
+    }
+}
