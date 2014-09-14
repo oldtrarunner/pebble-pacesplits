@@ -1,5 +1,6 @@
 // PaceSplits (c) 2014 Keith Blom - All rights reserved
-// v1.0 - 
+// V 1.1 - Consolidate persistent data. Add Chrono Reset to menu.
+// v1.0 - Initial release
 
 #define APP_VERSION "Ver 1.0"
 
@@ -15,7 +16,7 @@ static Window *setWindow;
 
 // *** Layers
 // Main menu layer
-#define NBR_MENU_ITEMS 5
+#define NBR_MENU_ITEMS 6
 static SimpleMenuLayer *menuLayer;
 static SimpleMenuItem menuItems[NBR_MENU_ITEMS];
 static SimpleMenuSection menuSection[1];
@@ -57,6 +58,9 @@ static InverterLayer *ftMinsInverterLayer;
 static TextLayer *splitDistLayer;
 static InverterLayer *splitDistInverterLayer;
 
+// Reset Chrono
+static TextLayer *resetChronoLayer;
+
 // *** Fonts
 GFont tbdFont;
 
@@ -90,6 +94,9 @@ static AppTimer *resetEndTimerHandle = NULL;
 // Accummulated chrono time.
 static time_t chronoElapsed = 0;
 
+// Time that the Pace Splits window containing chrono was closed.
+static time_t chronoCloseTm = 0;
+
 // *** Pace Splits Data. Format is "nn.n hh:mm:ss" + plus newline/null.
 #define MAX_SPLIT_INDEX 199
 #define MAX_DISPLAY_SPLITS 4
@@ -103,9 +110,6 @@ static int splitDisplayIndex = 0;
 // Key to access persistent data for menu window.
 static const uint32_t  menu_persistent_data_key = 1;
 
-// Key to access persistent data for Pace Splits window.
-static const uint32_t  ps_persistent_data_key = 2;
-
 // Structure for menu persistent data
 typedef struct menu_saved_state_S
 {
@@ -115,15 +119,10 @@ typedef struct menu_saved_state_S
   int timeMins;
   int timeSecs;
   int stepSize;
-} __attribute__((__packed__)) menu_saved_state_S;
-
-// Structure for Pace Splits persistent data
-typedef struct ps_saved_state_S
-{
   int chronoRunSelect;
   int chronoElapsed;
-  time_t closeTm;
-} __attribute__((__packed__)) ps_saved_state_S;
+  time_t chronoCloseTm;
+} __attribute__((__packed__)) menu_saved_state_S;
 
 
 //##################### "Set" Common Support ################################
@@ -142,7 +141,10 @@ static void setCommonLoad(char * title) {
   layer_add_child(setWindowLayer, text_layer_get_layer(setTitleLayer));
 
   setDataLayer = text_layer_create(GRect(0, 34, 144, 134));
+  text_layer_set_text_alignment(setDataLayer, GTextAlignmentCenter);
+  text_layer_set_font(setDataLayer, fonts_get_system_font(FONT_KEY_GOTHIC_28));
   text_layer_set_background_color(setDataLayer, GColorWhite);
+  text_layer_set_text_color(setDataLayer, GColorBlack);
   layer_add_child(setWindowLayer, text_layer_get_layer(setDataLayer));
 
   nextIconLayer = bitmap_layer_create(GRect(130, 67, 14, 30));
@@ -491,72 +493,16 @@ static void ps_handle_second_tick(struct tm *currentTime, TimeUnits units_change
 }
 
 
-// Pace Splits window needs its own persistent data in order to maintain correct
-// elapsed time for a running chrono.
-void psRestorePersistentData(){
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "Enter psRestorePersistentData()");
-  // Restore state if exists.
-  if (persist_exists(ps_persistent_data_key))
-  {
-    ps_saved_state_S saved_state;
-    int bytes_read = 0;
-    if (sizeof(ps_saved_state_S) == (bytes_read = persist_read_data(ps_persistent_data_key,
-                                                                    (void *)&saved_state,
-                                                                    sizeof(ps_saved_state_S))))
-    {
-      //APP_LOG(APP_LOG_LEVEL_DEBUG, "psRestorePersistentData() got data");
-      // Chronometer time that elapsed while app was not running.
-      time_t timeSinceClosed = 0;
-      if (saved_state.chronoRunSelect == RUN_START)
-      {
-        timeSinceClosed = time(NULL) - saved_state.closeTm;
-      }
-
-      chronoRunSelect = saved_state.chronoRunSelect;
-      chronoElapsed = saved_state.chronoElapsed + timeSinceClosed;
-    }
-    else
-    {
-      //APP_LOG(APP_LOG_LEVEL_DEBUG, "error during psRestorePersistentData(). bytes read = %i", bytes_read);
-    }
-  }
-  else
-  {
-    //APP_LOG(APP_LOG_LEVEL_DEBUG, "psRestorePersistentData persist_exists() returned false");
-    chronoElapsed = 0;
-    chronoRunSelect = RUN_STOP;
-  }
-}
-
-
-void psSavePersistentData(){
-  ps_saved_state_S saved_state;
-
-  saved_state.chronoRunSelect = chronoRunSelect;
-  saved_state.chronoElapsed = chronoElapsed;
-  saved_state.closeTm = time(NULL);
-
-  int bytes_written = 0;
-  if (sizeof(ps_saved_state_S) != (bytes_written = persist_write_data(ps_persistent_data_key,
-                                                                      (void *)&saved_state,
-                                                                      sizeof(ps_saved_state_S))))
-  {
-    ////APP_LOG(APP_LOG_LEVEL_DEBUG, "error during persist_write_data(). bytes written = %i", bytes_written);
-
-    // Delete peristent data when a problem has occurred saving it.
-    persist_delete(ps_persistent_data_key);
-  }
-  else
-  {
-    ////APP_LOG(APP_LOG_LEVEL_DEBUG, "write state: stepSize: %i",
-    //                             saved_state.stepSize);
-  }
-}
-
-
 static void psLoad(Window *window) {
   //APP_LOG(APP_LOG_LEVEL_DEBUG, "Enter psLoad()");
-  psRestorePersistentData();
+  //psRestorePersistentData();
+  // Chronometer time that elapsed while window was not open.
+  time_t timeSinceClosed = 0;
+  if (chronoRunSelect == RUN_START)
+  {
+    timeSinceClosed = time(NULL) - chronoCloseTm;
+  }
+  chronoElapsed += timeSinceClosed;
 
   Layer * psWindowLayer = window_get_root_layer(psWindow);
   window_set_background_color(psWindow, GColorBlack);
@@ -611,7 +557,9 @@ void psUnload(Window *window) {
   text_layer_destroy(psSplitsLayer);
   window_destroy(psWindow);
 
-  psSavePersistentData();
+  //psSavePersistentData();
+
+  chronoCloseTm = time(NULL);
 }
 
 
@@ -1052,6 +1000,65 @@ void sdUnload(Window *window) {
   setCommonUnload();
 }
 
+//##################### Reset Chrono ################################
+
+static void rc_select_single_click_handler(ClickRecognizerRef recognizer, Window *window) {
+
+  chronoElapsed = 0;
+  chronoRunSelect = RUN_STOP;
+  text_layer_set_text(resetChronoLayer, "Chronometer has been Reset.");
+}
+
+
+static void rc_click_config_provider(Window *window) {
+  //APP_LOG(APP_LOG_LEVEL_DEBUG, "Enter rc_click_config_provider()");
+  window_single_click_subscribe(BUTTON_ID_SELECT, (ClickHandler) rc_select_single_click_handler);
+}
+
+
+static void rcLoad(Window *window) {
+  //APP_LOG(APP_LOG_LEVEL_DEBUG, "Enter rcLoad()");
+  setCommonLoad("Reset Chrono");
+
+  resetChronoLayer = text_layer_create(GRect(2, 2, 128, 136));
+  text_layer_set_text_alignment(resetChronoLayer, GTextAlignmentCenter);
+  text_layer_set_font(resetChronoLayer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+  text_layer_set_background_color(resetChronoLayer, GColorWhite);
+  text_layer_set_text_color(resetChronoLayer, GColorBlack);
+  layer_add_child(text_layer_get_layer(setDataLayer), text_layer_get_layer(resetChronoLayer));
+
+  // Chrono is running.
+  if (chronoRunSelect == RUN_START)
+  {
+    text_layer_set_text(resetChronoLayer, "Chronometer is running. Press SELECT button to Stop and Reset.");
+  }
+
+  // Chrono is stopped.
+  else
+  {
+    if (chronoElapsed == 0)
+    {
+      // Not needed for this option.
+      layer_set_hidden(bitmap_layer_get_layer(nextIconLayer), true);
+
+      text_layer_set_text(resetChronoLayer, "Chronometer is already Reset.");
+    }
+    else
+    {
+      text_layer_set_text(resetChronoLayer, "Press SELECT button to Reset chronometer.");
+    }
+  }
+
+  //APP_LOG(APP_LOG_LEVEL_DEBUG, "about to set rc_click_config_provider()");
+  window_set_click_config_provider(setWindow, (ClickConfigProvider) rc_click_config_provider);
+}
+
+
+void rcUnload(Window *window) {
+  text_layer_destroy(resetChronoLayer);
+  setCommonUnload();
+}
+
 //##################### Main Menu ################################
 
 static void menuItemPaceSplits(int index, void *context){
@@ -1106,6 +1113,19 @@ static void menuItemSplitDistance(int index, void *context)
 }
 
 
+static void menuItemResetChrono(int index, void *context)
+{
+  setWindow = window_create();
+  window_set_fullscreen(setWindow, true);
+  window_set_window_handlers(setWindow,
+                             (WindowHandlers){.load = rcLoad,
+                                              //.appear = rcAppear,
+                                              //.disappear = rcDisppear,
+                                              .unload = rcUnload});
+  window_stack_push(setWindow, true /* Animated */);
+}
+
+
 void menuRestorePersistentData(){
   //APP_LOG(APP_LOG_LEVEL_DEBUG, "Enter menuRestorePersistentData()");
   // Restore state if exists.
@@ -1123,6 +1143,9 @@ void menuRestorePersistentData(){
       timeMins = saved_state.timeMins;
       timeSecs = saved_state.timeSecs;
       stepSize = saved_state.stepSize;
+      chronoCloseTm = saved_state.chronoCloseTm;
+      chronoRunSelect = saved_state.chronoRunSelect;
+      chronoElapsed = saved_state.chronoElapsed;
     }
     else
     {
@@ -1138,12 +1161,17 @@ void menuRestorePersistentData(){
 
 void menuSavePersistentData(){
   menu_saved_state_S saved_state;
+
   saved_state.distInteger = distInteger;
   saved_state.distTenths = distTenths;
   saved_state.timeHours = timeHours;
   saved_state.timeMins = timeMins;
   saved_state.timeSecs = timeSecs;
   saved_state.stepSize = stepSize;
+  saved_state.chronoCloseTm = chronoCloseTm;
+  saved_state.chronoRunSelect = chronoRunSelect;
+  saved_state.chronoElapsed = chronoElapsed;
+
   int bytes_written = 0;
   if (sizeof(menu_saved_state_S) != (bytes_written = persist_write_data(menu_persistent_data_key,
                                                                    (void *)&saved_state,
@@ -1174,28 +1202,27 @@ static void menuLoad(Window *window) {
 
   Layer * menuWindowLayer = window_get_root_layer(menuWindow);
 
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "about to set menu item 0");
   menuItems[0] = (SimpleMenuItem){.title = "Pace Splits",
                                   .subtitle = NULL,
                                   .callback = menuItemPaceSplits,
                                   .icon = menuIcon};
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "menu item 0 set");
   menuItems[1] = (SimpleMenuItem){.title = "Race Distance",
                                   .subtitle = NULL,
                                   .callback = menuItemRaceDistance,
                                   .icon = NULL};
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "menu item 1 set");
   menuItems[2] = (SimpleMenuItem){.title = "Finish Time",
                                   .subtitle = NULL,
                                   .callback = menuItemFinishTime,
                                   .icon = NULL};
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "menu item 2 set");
   menuItems[3] = (SimpleMenuItem){.title = "Split Distance",
                                   .subtitle = NULL,
                                   .callback = menuItemSplitDistance,
                                   .icon = NULL};
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "menu item 3 set");
-  menuItems[4] = (SimpleMenuItem){.title = APP_VERSION,
+  menuItems[4] = (SimpleMenuItem){.title = "Reset Chrono",
+                                  .subtitle = NULL,
+                                  .callback = menuItemResetChrono,
+                                  .icon = NULL};
+  menuItems[5] = (SimpleMenuItem){.title = APP_VERSION,
                                   .subtitle = NULL,
                                   .callback = NULL,
                                   .icon = NULL};
